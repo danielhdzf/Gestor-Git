@@ -1,14 +1,20 @@
 mod config;
 mod git;
+mod runner;
 
 use config::{AddError, Config, Repo};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use tauri::{Manager, State};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 struct AppState {
     config: Mutex<Config>,
     file: PathBuf,
+    /// Ejecuciones en marcha y la señal para cancelarlas.
+    runs: Mutex<HashMap<u64, Arc<AtomicBool>>>,
+    next_run: AtomicU64,
 }
 
 /// Lo que ve la interfaz: el repo guardado más su estado actual en git.
@@ -111,6 +117,48 @@ fn set_group(path: String, group: Option<String>, state: State<AppState>) -> Res
     Ok(())
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RunEventPayload {
+    run_id: u64,
+    #[serde(flatten)]
+    event: runner::RunEvent,
+}
+
+/// Lanza `command` en `repos` en segundo plano. El progreso llega como eventos `run-event`.
+#[tauri::command]
+fn start_run(
+    repos: Vec<String>,
+    command: String,
+    mode: runner::Mode,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<u64, String> {
+    if repos.is_empty() {
+        return Err("Selecciona al menos un repositorio".into());
+    }
+    let args = runner::parse_command(&command)?;
+    let run_id = state.next_run.fetch_add(1, Ordering::SeqCst);
+    let cancel = Arc::new(AtomicBool::new(false));
+    state.runs.lock().unwrap().insert(run_id, cancel.clone());
+
+    std::thread::spawn(move || {
+        let emitter = app.clone();
+        runner::run(repos, args, mode, cancel, move |event| {
+            let _ = emitter.emit("run-event", RunEventPayload { run_id, event });
+        });
+        app.state::<AppState>().runs.lock().unwrap().remove(&run_id);
+    });
+    Ok(run_id)
+}
+
+#[tauri::command]
+fn cancel_run(run_id: u64, state: State<AppState>) {
+    if let Some(cancel) = state.runs.lock().unwrap().get(&run_id) {
+        cancel.store(true, Ordering::SeqCst);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -121,6 +169,8 @@ pub fn run() {
             app.manage(AppState {
                 config: Mutex::new(config),
                 file,
+                runs: Mutex::new(HashMap::new()),
+                next_run: AtomicU64::new(1),
             });
             Ok(())
         })
@@ -129,7 +179,9 @@ pub fn run() {
             add_repos,
             find_repos,
             remove_repo,
-            set_group
+            set_group,
+            start_run,
+            cancel_run
         ])
         .run(tauri::generate_context!())
         .expect("error al iniciar la aplicación");
