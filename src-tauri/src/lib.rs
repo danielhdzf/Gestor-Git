@@ -2,7 +2,7 @@ mod config;
 mod git;
 mod runner;
 
-use config::{AddError, Config, Repo};
+use config::{AddError, Config, Repo, Sequence};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -125,11 +125,38 @@ struct RunEventPayload {
     event: runner::RunEvent,
 }
 
-/// Lanza `command` en `repos` en segundo plano. El progreso llega como eventos `run-event`.
+#[tauri::command]
+fn list_sequences(state: State<AppState>) -> Vec<Sequence> {
+    state.config.lock().unwrap().sequences.clone()
+}
+
+#[tauri::command]
+fn save_sequence(
+    original: Option<String>,
+    name: String,
+    steps: Vec<String>,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let mut cfg = state.config.lock().unwrap();
+    cfg.save_sequence(original.as_deref(), &name, steps)?;
+    persist(&state, &cfg)
+}
+
+#[tauri::command]
+fn delete_sequence(name: String, state: State<AppState>) -> Result<(), String> {
+    let mut cfg = state.config.lock().unwrap();
+    if cfg.delete_sequence(&name) {
+        persist(&state, &cfg)?;
+    }
+    Ok(())
+}
+
+/// Lanza `commands`, en orden, en cada uno de `repos` en segundo plano.
+/// El progreso llega como eventos `run-event`.
 #[tauri::command]
 fn start_run(
     repos: Vec<String>,
-    command: String,
+    commands: Vec<String>,
     mode: runner::Mode,
     app: AppHandle,
     state: State<AppState>,
@@ -137,14 +164,20 @@ fn start_run(
     if repos.is_empty() {
         return Err("Selecciona al menos un repositorio".into());
     }
-    let args = runner::parse_command(&command)?;
+    let steps = commands
+        .iter()
+        .map(|c| runner::parse_command(c))
+        .collect::<Result<Vec<_>, _>>()?;
+    if steps.is_empty() {
+        return Err("No hay ningún comando que ejecutar".into());
+    }
     let run_id = state.next_run.fetch_add(1, Ordering::SeqCst);
     let cancel = Arc::new(AtomicBool::new(false));
     state.runs.lock().unwrap().insert(run_id, cancel.clone());
 
     std::thread::spawn(move || {
         let emitter = app.clone();
-        runner::run(repos, args, mode, cancel, move |event| {
+        runner::run(repos, steps, mode, cancel, move |event| {
             let _ = emitter.emit("run-event", RunEventPayload { run_id, event });
         });
         app.state::<AppState>().runs.lock().unwrap().remove(&run_id);
@@ -180,6 +213,9 @@ pub fn run() {
             find_repos,
             remove_repo,
             set_group,
+            list_sequences,
+            save_sequence,
+            delete_sequence,
             start_run,
             cancel_run
         ])

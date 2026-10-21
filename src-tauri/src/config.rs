@@ -13,10 +13,19 @@ pub struct Repo {
     pub group: Option<String>,
 }
 
+/// Una lista de comandos git con nombre, que se ejecuta en orden en cada repo.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Sequence {
+    pub name: String,
+    pub steps: Vec<String>,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub repos: Vec<Repo>,
+    #[serde(default)]
+    pub sequences: Vec<Sequence>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -78,6 +87,47 @@ impl Config {
             }
             None => false,
         }
+    }
+}
+
+impl Config {
+    /// Crea o reemplaza una secuencia. `original` es su nombre anterior si se está editando.
+    pub fn save_sequence(&mut self, original: Option<&str>, name: &str, steps: Vec<String>) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("La secuencia necesita un nombre".into());
+        }
+        let steps: Vec<String> = steps
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if steps.is_empty() {
+            return Err("Añade al menos un comando".into());
+        }
+        for (i, step) in steps.iter().enumerate() {
+            crate::runner::parse_command(step).map_err(|e| format!("Línea {}: {e}", i + 1))?;
+        }
+        let same = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
+        if self
+            .sequences
+            .iter()
+            .any(|s| same(&s.name, name) && !original.is_some_and(|o| same(o, &s.name)))
+        {
+            return Err(format!("Ya existe una secuencia llamada \"{name}\""));
+        }
+        if let Some(o) = original {
+            self.sequences.retain(|s| !same(&s.name, o));
+        }
+        self.sequences.push(Sequence { name: name.into(), steps });
+        self.sequences.sort_by_key(|s| s.name.to_lowercase());
+        Ok(())
+    }
+
+    pub fn delete_sequence(&mut self, name: &str) -> bool {
+        let before = self.sequences.len();
+        self.sequences.retain(|s| s.name != name);
+        self.sequences.len() != before
     }
 }
 
@@ -150,6 +200,34 @@ mod tests {
         assert_eq!(cfg.repos[0].group, None);
         assert!(cfg.remove("/a/b"));
         assert!(!cfg.remove("/a/b"));
+    }
+
+    #[test]
+    fn secuencias() {
+        let mut cfg = Config::default();
+        let steps = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        cfg.save_sequence(None, " Actualizar ", steps(&["fetch", "  ", "git pull"])).unwrap();
+        assert_eq!(cfg.sequences[0], Sequence { name: "Actualizar".into(), steps: steps(&["fetch", "git pull"]) });
+
+        assert!(cfg.save_sequence(None, "actualizar", steps(&["status"])).is_err(), "nombre repetido");
+        assert!(cfg.save_sequence(None, "", steps(&["status"])).is_err());
+        assert!(cfg.save_sequence(None, "Vacía", steps(&["", " "])).is_err());
+        let err = cfg.save_sequence(None, "Mala", steps(&["status", "commit -m \"x"])).unwrap_err();
+        assert!(err.starts_with("Línea 2"));
+
+        // Renombrar al editar no choca consigo misma.
+        cfg.save_sequence(Some("Actualizar"), "ACTUALIZAR", steps(&["pull"])).unwrap();
+        assert_eq!(cfg.sequences.len(), 1);
+        assert_eq!(cfg.sequences[0].name, "ACTUALIZAR");
+
+        assert!(cfg.delete_sequence("ACTUALIZAR"));
+        assert!(cfg.sequences.is_empty());
+    }
+
+    #[test]
+    fn config_antigua_sin_secuencias_carga() {
+        let cfg: Config = serde_json::from_str(r#"{"repos":[]}"#).unwrap();
+        assert!(cfg.sequences.is_empty());
     }
 
     #[test]
