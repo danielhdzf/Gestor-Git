@@ -45,7 +45,7 @@ body { margin: 0; background: var(--bg); }
 .toolbar h1 { font-size: 20px; margin: 0; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
-button, input {
+button, input, select, textarea {
   font: inherit;
   border-radius: 6px;
   border: 1px solid var(--border);
@@ -127,3 +127,17 @@ input[type="checkbox"], input[type="radio"] { padding: 0; margin: 0; accent-colo
   font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; white-space: pre-wrap;
 }
 .output .stderr { color: #f0b37e; }
+
+button.small { padding: 4px 10px; font-size: 13px; }
+button.danger-text { color: var(--error); }
+.tool-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.row-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; margin-right: 4px; }
+.row-label.spaced { margin-left: 16px; }
+.tool-row select { padding: 4px 8px; max-width: 240px; }
+.hint { color: var(--muted); font-size: 12px; }
+.editor { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px dashed var(--border); border-radius: 8px; }
+.editor textarea { font-family: Consolas, "Cascadia Mono", monospace; resize: vertical; }
+.editor-actions { display: flex; gap: 6px; align-items: center; }
+.editor-actions .hint { flex: 1; }
+.output .info { color: #7fb4ff; font-weight: 600; }
+.output .info:not(:first-child) { margin-top: 6px; }

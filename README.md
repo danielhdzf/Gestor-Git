@@ -8,7 +8,7 @@ Hecha con [Tauri 2](https://tauri.app/) (backend en Rust) y React + TypeScript.
 
 - [x] Paso 1: gestión de repositorios (añadir, buscar en una carpeta, agrupar, quitar) con configuración persistente.
 - [x] Paso 2: motor de ejecución en paralelo y en secuencia, con salida en vivo por repo y cancelación.
-- [ ] Paso 3: secuencias de comandos guardadas y atajos (status, fetch, pull).
+- [x] Paso 3: secuencias de comandos guardadas y atajos (status, fetch, pull).
 - [ ] Paso 4: instalador de Windows.
 
 ## Requisitos (Windows)

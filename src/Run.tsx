@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "./api";
-import type { RunEvent, RunMode } from "./api";
+import type { RunEvent, RunMode, Sequence, Stream } from "./api";
 
 export type RepoRunState = "pending" | "running" | "ok" | "error" | "skipped";
 
@@ -8,13 +8,14 @@ export interface RepoResult {
   path: string;
   name: string;
   state: RepoRunState;
-  lines: { stream: "stdout" | "stderr"; text: string }[];
+  lines: { stream: Stream; text: string }[];
   note: string | null;
 }
 
 export interface Run {
   id: number;
-  command: string;
+  /** Lo que se muestra como título: el comando o el nombre de la secuencia. */
+  label: string;
   results: RepoResult[];
   done: boolean;
   cancelled: boolean;
@@ -46,11 +47,11 @@ export function useRun() {
     };
   }, []);
 
-  async function start(repos: { path: string; name: string }[], command: string, mode: RunMode) {
-    const id = await api.startRun(repos.map((r) => r.path), command, mode);
+  async function start(repos: { path: string; name: string }[], label: string, commands: string[], mode: RunMode) {
+    const id = await api.startRun(repos.map((r) => r.path), commands, mode);
     setRun({
       id,
-      command,
+      label,
       done: false,
       cancelled: false,
       results: repos.map((r) => ({ ...r, state: "pending", lines: [], note: null })),
@@ -110,31 +111,85 @@ function applyEvents(run: Run, events: RunEvent[]): Run {
   return { ...run, done, cancelled, results: run.results.map((r) => byRepo.get(r.path)!) };
 }
 
+const QUICK_ACTIONS = [
+  { label: "status", command: "status -sb" },
+  { label: "fetch", command: "fetch --prune" },
+  { label: "pull", command: "pull" },
+];
+
+interface Draft {
+  original: string | null;
+  name: string;
+  text: string;
+}
+
 export function RunPanel({
   selectedCount,
   running,
   onRun,
   onCancel,
+  onError,
 }: {
   selectedCount: number;
   running: boolean;
-  onRun: (command: string, mode: RunMode) => void;
+  onRun: (label: string, commands: string[], mode: RunMode) => void;
   onCancel: () => void;
+  onError: (message: string) => void;
 }) {
   const [command, setCommand] = useState("status -sb");
   const [kind, setKind] = useState<RunMode["kind"]>("parallel");
   const [max, setMax] = useState(4);
   const [stopOnError, setStopOnError] = useState(true);
+  const [sequences, setSequences] = useState<Sequence[]>([]);
+  const [chosen, setChosen] = useState("");
+  const [draft, setDraft] = useState<Draft | null>(null);
 
-  function submit(e: React.FormEvent) {
-    e.preventDefault();
-    if (running || !command.trim() || selectedCount === 0) return;
-    onRun(command, kind === "parallel" ? { kind, max } : { kind, stopOnError });
+  useEffect(() => {
+    api.listSequences().then(setSequences, (e) => onError(String(e)));
+  }, []);
+
+  const canRun = !running && selectedCount > 0;
+  const mode = (): RunMode => (kind === "parallel" ? { kind, max } : { kind, stopOnError });
+  const current = sequences.find((s) => s.name === chosen) ?? sequences[0];
+
+  function runSingle(cmd: string) {
+    if (canRun && cmd.trim()) onRun(`git ${cmd.trim()}`, [cmd], mode());
+  }
+
+  async function saveDraft() {
+    if (!draft) return;
+    try {
+      await api.saveSequence(draft.original, draft.name, draft.text.split("\n"));
+      const list = await api.listSequences();
+      setSequences(list);
+      setChosen(list.find((s) => s.name.toLowerCase() === draft.name.trim().toLowerCase())?.name ?? "");
+      setDraft(null);
+    } catch (e) {
+      onError(String(e));
+    }
+  }
+
+  async function deleteDraft() {
+    if (!draft?.original) return;
+    try {
+      await api.deleteSequence(draft.original);
+      setSequences(await api.listSequences());
+      setChosen("");
+      setDraft(null);
+    } catch (e) {
+      onError(String(e));
+    }
   }
 
   return (
-    <form className="run-panel" onSubmit={submit}>
-      <div className="command-row">
+    <div className="run-panel">
+      <form
+        className="command-row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          runSingle(command);
+        }}
+      >
         <span className="prompt">git</span>
         <input
           className="command"
@@ -146,11 +201,80 @@ export function RunPanel({
         {running ? (
           <button type="button" className="danger" onClick={onCancel}>Cancelar</button>
         ) : (
-          <button type="submit" disabled={selectedCount === 0 || !command.trim()}>
+          <button type="submit" disabled={!canRun || !command.trim()}>
             Ejecutar en {selectedCount} {selectedCount === 1 ? "repo" : "repos"}
           </button>
         )}
+      </form>
+
+      <div className="tool-row">
+        <span className="row-label">Atajos</span>
+        {QUICK_ACTIONS.map((a) => (
+          <button key={a.label} className="secondary small" disabled={!canRun} onClick={() => runSingle(a.command)} title={`git ${a.command}`}>
+            {a.label}
+          </button>
+        ))}
+
+        <span className="row-label spaced">Secuencia</span>
+        {sequences.length > 0 ? (
+          <>
+            <select value={current?.name ?? ""} onChange={(e) => setChosen(e.currentTarget.value)}>
+              {sequences.map((s) => (
+                <option key={s.name} value={s.name}>
+                  {s.name} ({s.steps.length})
+                </option>
+              ))}
+            </select>
+            <button
+              className="small"
+              disabled={!canRun || !current}
+              title={current?.steps.map((c) => `git ${c}`).join("\n")}
+              onClick={() => current && onRun(current.name, current.steps, mode())}
+            >
+              Ejecutar
+            </button>
+            <button
+              className="secondary small"
+              disabled={!current}
+              onClick={() => current && setDraft({ original: current.name, name: current.name, text: current.steps.join("\n") })}
+            >
+              Editar
+            </button>
+          </>
+        ) : (
+          <span className="hint">ninguna todavía</span>
+        )}
+        <button className="secondary small" onClick={() => setDraft({ original: null, name: "", text: "" })}>
+          Nueva
+        </button>
       </div>
+
+      {draft && (
+        <div className="editor">
+          <input
+            placeholder="Nombre, por ejemplo: Actualizar main"
+            value={draft.name}
+            onChange={(e) => setDraft({ ...draft, name: e.currentTarget.value })}
+            autoFocus
+          />
+          <textarea
+            rows={5}
+            spellCheck={false}
+            placeholder={"Un comando git por línea, por ejemplo:\nfetch --prune\ncheckout main\npull --ff-only"}
+            value={draft.text}
+            onChange={(e) => setDraft({ ...draft, text: e.currentTarget.value })}
+          />
+          <div className="editor-actions">
+            <span className="hint">En cada repo se ejecutan en orden y se para en el primer comando que falle.</span>
+            {draft.original && (
+              <button className="secondary small danger-text" onClick={deleteDraft}>Borrar</button>
+            )}
+            <button className="secondary small" onClick={() => setDraft(null)}>Cancelar</button>
+            <button className="small" onClick={saveDraft}>Guardar</button>
+          </div>
+        </div>
+      )}
+
       <div className="options">
         <label>
           <input type="radio" checked={kind === "parallel"} onChange={() => setKind("parallel")} /> En paralelo
@@ -178,7 +302,7 @@ export function RunPanel({
           </label>
         )}
       </div>
-    </form>
+    </div>
   );
 }
 
@@ -204,7 +328,7 @@ export function RunResults({ run, onClear }: { run: Run; onClear: () => void }) 
     <section className="results">
       <div className="results-header">
         <h2>
-          git {run.command} <span className="count">{run.done ? (run.cancelled ? "cancelado" : "terminado") : "en curso"}</span>
+          {run.label} <span className="count">{run.done ? (run.cancelled ? "cancelado" : "terminado") : "en curso"}</span>
         </h2>
         <span className="summary">{summary}</span>
         {run.done && <button className="secondary" onClick={onClear}>Cerrar</button>}

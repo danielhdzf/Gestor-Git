@@ -24,6 +24,8 @@ pub enum Mode {
 pub enum Stream {
     Stdout,
     Stderr,
+    /// Líneas que añade la app, como la cabecera de cada paso de una secuencia.
+    Info,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -81,9 +83,10 @@ pub fn parse_command(input: &str) -> Result<Vec<String>, String> {
     Ok(args)
 }
 
-/// Ejecuta `git <args>` en cada repo según `mode`, informando de todo por `emit`.
-/// Bloquea hasta terminar; `cancel` detiene lo que esté en marcha y salta lo pendiente.
-pub fn run<F>(repos: Vec<String>, args: Vec<String>, mode: Mode, cancel: Arc<AtomicBool>, emit: F)
+/// Ejecuta los pasos (cada uno, los argumentos de un `git`) en cada repo según `mode`,
+/// informando de todo por `emit`. Bloquea hasta terminar; `cancel` detiene lo que esté
+/// en marcha y salta lo pendiente.
+pub fn run<F>(repos: Vec<String>, steps: Vec<Vec<String>>, mode: Mode, cancel: Arc<AtomicBool>, emit: F)
 where
     F: Fn(RunEvent) + Send + Sync + 'static,
 {
@@ -94,14 +97,14 @@ where
             let workers = max.max(1).min(queue.lock().unwrap().len().max(1));
             let handles: Vec<_> = (0..workers)
                 .map(|_| {
-                    let (queue, args, cancel, emit) =
-                        (queue.clone(), args.clone(), cancel.clone(), emit.clone());
+                    let (queue, steps, cancel, emit) =
+                        (queue.clone(), steps.clone(), cancel.clone(), emit.clone());
                     thread::spawn(move || {
                         while let Some(repo) = queue.lock().unwrap().pop_front() {
                             if cancel.load(Ordering::SeqCst) {
                                 emit(skipped(repo, "Cancelado"));
                             } else {
-                                run_one(&repo, &args, &cancel, &*emit);
+                                run_one(&repo, &steps, &cancel, &*emit);
                             }
                         }
                     })
@@ -121,7 +124,7 @@ where
                     emit(skipped(repo, reason));
                     continue;
                 }
-                if !run_one(&repo, &args, &cancel, &*emit) && stop_on_error {
+                if !run_one(&repo, &steps, &cancel, &*emit) && stop_on_error {
                     stopped = Some("Detenido porque falló un repo anterior");
                 }
             }
@@ -134,10 +137,57 @@ fn skipped(repo: String, reason: &str) -> RunEvent {
     RunEvent::Skipped { repo, reason: reason.into() }
 }
 
-/// Devuelve si el comando terminó bien.
-fn run_one(repo: &str, args: &[String], cancel: &AtomicBool, emit: &(dyn Fn(RunEvent) + Send + Sync)) -> bool {
-    emit(RunEvent::Started { repo: repo.into() });
+enum StepOutcome {
+    Ok,
+    Failed(Option<i32>),
+    Error(String),
+}
 
+/// Ejecuta los pasos en orden y para en el primero que falle. Devuelve si todos fueron bien.
+fn run_one(
+    repo: &str,
+    steps: &[Vec<String>],
+    cancel: &AtomicBool,
+    emit: &(dyn Fn(RunEvent) + Send + Sync),
+) -> bool {
+    emit(RunEvent::Started { repo: repo.into() });
+    let multi = steps.len() > 1;
+
+    for (i, args) in steps.iter().enumerate() {
+        if multi {
+            emit(RunEvent::Output {
+                repo: repo.into(),
+                stream: Stream::Info,
+                line: format!("$ git {}", display_command(args)),
+                replace: false,
+            });
+        }
+        let (code, error) = match run_step(repo, args, cancel, emit) {
+            StepOutcome::Ok => continue,
+            StepOutcome::Failed(code) => (code, None),
+            StepOutcome::Error(e) => (None, Some(e)),
+        };
+        // Con un solo paso basta el código de salida; con varios hay que decir cuál falló.
+        let error = if multi {
+            let detail = error.unwrap_or_else(|| format!("código {}", code.map_or("?".into(), |c| c.to_string())));
+            Some(format!(
+                "Falló el paso {} de {} (git {}): {detail}",
+                i + 1,
+                steps.len(),
+                display_command(args)
+            ))
+        } else {
+            error
+        };
+        emit(RunEvent::Finished { repo: repo.into(), success: false, code, error });
+        return false;
+    }
+
+    emit(RunEvent::Finished { repo: repo.into(), success: true, code: Some(0), error: None });
+    true
+}
+
+fn run_step(repo: &str, args: &[String], cancel: &AtomicBool, emit: &(dyn Fn(RunEvent) + Send + Sync)) -> StepOutcome {
     let spawned = git_command()
         .arg("-C")
         .arg(repo)
@@ -151,15 +201,7 @@ fn run_one(repo: &str, args: &[String], cancel: &AtomicBool, emit: &(dyn Fn(RunE
 
     let mut child = match spawned {
         Ok(child) => child,
-        Err(e) => {
-            emit(RunEvent::Finished {
-                repo: repo.into(),
-                success: false,
-                code: None,
-                error: Some(format!("No se pudo ejecutar git: {e}")),
-            });
-            return false;
-        }
+        Err(e) => return StepOutcome::Error(format!("No se pudo ejecutar git: {e}")),
     };
 
     let result = thread::scope(|s| {
@@ -170,29 +212,26 @@ fn run_one(repo: &str, args: &[String], cancel: &AtomicBool, emit: &(dyn Fn(RunE
         wait_or_cancel(&mut child, cancel)
     });
 
-    let event = match result {
-        Ok(Some(status)) => RunEvent::Finished {
-            repo: repo.into(),
-            success: status.success(),
-            code: status.code(),
-            error: None,
-        },
-        Ok(None) => RunEvent::Finished {
-            repo: repo.into(),
-            success: false,
-            code: None,
-            error: Some("Cancelado".into()),
-        },
-        Err(e) => RunEvent::Finished {
-            repo: repo.into(),
-            success: false,
-            code: None,
-            error: Some(e.to_string()),
-        },
-    };
-    let ok = matches!(event, RunEvent::Finished { success: true, .. });
-    emit(event);
-    ok
+    match result {
+        Ok(Some(status)) if status.success() => StepOutcome::Ok,
+        Ok(Some(status)) => StepOutcome::Failed(status.code()),
+        Ok(None) => StepOutcome::Error("Cancelado".into()),
+        Err(e) => StepOutcome::Error(e.to_string()),
+    }
+}
+
+/// Muestra los argumentos como se escribirían, con comillas donde hacen falta.
+pub fn display_command(args: &[String]) -> String {
+    args.iter()
+        .map(|a| {
+            if a.is_empty() || a.chars().any(char::is_whitespace) {
+                if a.contains('"') { format!("'{a}'") } else { format!("\"{a}\"") }
+            } else {
+                a.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Espera al proceso; si piden cancelar lo mata y devuelve `None`.
@@ -286,7 +325,7 @@ mod tests {
     fn collect(repos: Vec<String>, cmd: &str, mode: Mode) -> Vec<RunEvent> {
         let events = Arc::new(Mutex::new(Vec::new()));
         let sink = events.clone();
-        run(repos, parse_command(cmd).unwrap(), mode, Arc::new(AtomicBool::new(false)), move |e| {
+        run(repos, vec![parse_command(cmd).unwrap()], mode, Arc::new(AtomicBool::new(false)), move |e| {
             sink.lock().unwrap().push(e)
         });
         Arc::try_unwrap(events).unwrap().into_inner().unwrap()
@@ -361,7 +400,7 @@ mod tests {
         let sink = events.clone();
         run(
             vec!["a".into(), "b".into()],
-            vec!["status".into()],
+            vec![vec!["status".into()]],
             Mode::Parallel { max: 4 },
             Arc::new(AtomicBool::new(true)),
             move |e| sink.lock().unwrap().push(e),
@@ -369,6 +408,47 @@ mod tests {
         let events = events.lock().unwrap();
         assert_eq!(events.iter().filter(|e| matches!(e, RunEvent::Skipped { .. })).count(), 2);
         assert_eq!(events.last(), Some(&RunEvent::Done { cancelled: true }));
+    }
+
+    #[test]
+    fn secuencia_para_en_el_paso_que_falla() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let repo = dir.path().to_string_lossy().into_owned();
+        let steps = ["status", "checkout no-existe", "log -1"]
+            .iter()
+            .map(|c| parse_command(c).unwrap())
+            .collect();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        run(
+            vec![repo.clone()],
+            steps,
+            Mode::Parallel { max: 1 },
+            Arc::new(AtomicBool::new(false)),
+            move |e| sink.lock().unwrap().push(e),
+        );
+        let events = events.lock().unwrap();
+        let headers: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                RunEvent::Output { stream: Stream::Info, line, .. } => Some(line.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(headers, ["$ git status", "$ git checkout no-existe"]);
+        let error = events.iter().find_map(|e| match e {
+            RunEvent::Finished { success: false, error, .. } => error.clone(),
+            _ => None,
+        });
+        assert!(error.unwrap().starts_with("Falló el paso 2 de 3 (git checkout no-existe)"));
+    }
+
+    #[test]
+    fn muestra_comandos_con_comillas() {
+        let args = parse_command(r#"commit -m "hola mundo" --allow-empty"#).unwrap();
+        assert_eq!(display_command(&args), r#"commit -m "hola mundo" --allow-empty"#);
+        assert_eq!(parse_command(&display_command(&args)).unwrap(), args);
     }
 
     fn lines_of(input: &[u8]) -> Vec<(String, bool)> {

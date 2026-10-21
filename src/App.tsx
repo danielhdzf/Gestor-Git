@@ -46,10 +46,10 @@ function App() {
     });
   }
 
-  async function runCommand(command: string, mode: api.RunMode) {
+  async function runCommands(label: string, commands: string[], mode: api.RunMode) {
     const targets = repos.filter((r) => selected.has(r.path));
     try {
-      await start(targets, command, mode);
+      await start(targets, label, commands, mode);
     } catch (e) {
       setNotice(String(e));
     }
@@ -144,7 +144,13 @@ function App() {
         </div>
       )}
 
-      <RunPanel selectedCount={selected.size} running={running} onRun={runCommand} onCancel={cancel} />
+      <RunPanel
+        selectedCount={selected.size}
+        running={running}
+        onRun={runCommands}
+        onCancel={cancel}
+        onError={setNotice}
+      />
 
       {run && <RunResults run={run} onClear={clear} />}
 
