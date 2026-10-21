@@ -144,3 +144,5 @@ button.danger-text { color: var(--error); }
 
 .path-row { display: flex; gap: 8px; width: 100%; }
 .path-row input { flex: 1; font-family: Consolas, "Cascadia Mono", monospace; }
+button.mono { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; }
+button.icon { padding: 4px 8px; }

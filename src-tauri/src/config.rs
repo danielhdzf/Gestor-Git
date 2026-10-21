@@ -26,7 +26,13 @@ pub struct Config {
     pub repos: Vec<Repo>,
     #[serde(default)]
     pub sequences: Vec<Sequence>,
+    /// Comandos de los botones de atajo. `None` hasta que el usuario los cambia.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shortcuts: Option<Vec<String>>,
 }
+
+pub const DEFAULT_SHORTCUTS: [&str; 3] = ["status -sb", "fetch --prune", "pull"];
+const MAX_SHORTCUTS: usize = 8;
 
 #[derive(Debug, PartialEq)]
 pub enum AddError {
@@ -121,6 +127,29 @@ impl Config {
         }
         self.sequences.push(Sequence { name: name.into(), steps });
         self.sequences.sort_by_key(|s| s.name.to_lowercase());
+        Ok(())
+    }
+
+    pub fn shortcuts(&self) -> Vec<String> {
+        self.shortcuts
+            .clone()
+            .unwrap_or_else(|| DEFAULT_SHORTCUTS.iter().map(|s| s.to_string()).collect())
+    }
+
+    /// Guarda los atajos; una lista vacía vuelve a los de serie.
+    pub fn set_shortcuts(&mut self, commands: Vec<String>) -> Result<(), String> {
+        let commands: Vec<String> = commands
+            .into_iter()
+            .map(|c| c.trim().trim_start_matches("git ").trim().to_string())
+            .filter(|c| !c.is_empty())
+            .collect();
+        if commands.len() > MAX_SHORTCUTS {
+            return Err(format!("Como mucho {MAX_SHORTCUTS} atajos"));
+        }
+        for (i, c) in commands.iter().enumerate() {
+            crate::runner::parse_command(c).map_err(|e| format!("Línea {}: {e}", i + 1))?;
+        }
+        self.shortcuts = (!commands.is_empty()).then_some(commands);
         Ok(())
     }
 
@@ -222,6 +251,19 @@ mod tests {
 
         assert!(cfg.delete_sequence("ACTUALIZAR"));
         assert!(cfg.sequences.is_empty());
+    }
+
+    #[test]
+    fn atajos() {
+        let mut cfg = Config::default();
+        assert_eq!(cfg.shortcuts(), DEFAULT_SHORTCUTS);
+        cfg.set_shortcuts(vec!["git pull --rebase".into(), "  ".into(), "log -3 --oneline".into()]).unwrap();
+        assert_eq!(cfg.shortcuts(), ["pull --rebase", "log -3 --oneline"]);
+        assert!(cfg.set_shortcuts(vec!["commit -m \"x".into()]).unwrap_err().starts_with("Línea 1"));
+        assert!(cfg.set_shortcuts(vec!["status".into(); 9]).is_err());
+        cfg.set_shortcuts(vec![]).unwrap();
+        assert_eq!(cfg.shortcuts(), DEFAULT_SHORTCUTS);
+        assert!(!serde_json::to_string(&cfg).unwrap().contains("shortcuts"));
     }
 
     #[test]

@@ -126,6 +126,19 @@ struct RunEventPayload {
 }
 
 #[tauri::command]
+fn get_shortcuts(state: State<AppState>) -> Vec<String> {
+    state.config.lock().unwrap().shortcuts()
+}
+
+#[tauri::command]
+fn save_shortcuts(commands: Vec<String>, state: State<AppState>) -> Result<Vec<String>, String> {
+    let mut cfg = state.config.lock().unwrap();
+    cfg.set_shortcuts(commands)?;
+    persist(&state, &cfg)?;
+    Ok(cfg.shortcuts())
+}
+
+#[tauri::command]
 fn list_sequences(state: State<AppState>) -> Vec<Sequence> {
     state.config.lock().unwrap().sequences.clone()
 }
@@ -213,6 +226,8 @@ pub fn run() {
             find_repos,
             remove_repo,
             set_group,
+            get_shortcuts,
+            save_shortcuts,
             list_sequences,
             save_sequence,
             delete_sequence,

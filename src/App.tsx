@@ -73,59 +73,37 @@ function App() {
     );
   }, [repos, filter]);
 
-  async function add(paths: string[]) {
-    if (paths.length === 0) return;
+  /** Si `path` es un repo lo añade; si no, añade los repos de sus subcarpetas. */
+  async function addPathOrScan(path: string): Promise<boolean> {
     setBusy(true);
     try {
-      const result = await api.addRepos(paths, newGroup.trim() || null);
-      setNotice(describe(result));
+      const group = newGroup.trim() || null;
+      const result = await api.addRepos([path], group);
+      const notRepo = result.added.length === 0 && result.skipped[0]?.reason === "No es un repositorio git";
+      const found = notRepo ? await api.findRepos(path) : [];
+      if (found.length > 0) setNotice(describe(await api.addRepos(found, group)));
+      else if (notRepo) setNotice("Esa carpeta no es un repositorio git ni contiene ninguno.");
+      else setNotice(describe(result));
       await refresh();
+      return result.added.length > 0 || found.length > 0;
     } catch (e) {
       setNotice(String(e));
+      return false;
     } finally {
       setBusy(false);
     }
   }
 
-  async function pickRepos() {
-    const picked = await open({ directory: true, multiple: true, title: "Elige uno o varios repositorios" });
-    if (picked) await add(Array.isArray(picked) ? picked : [picked]);
+  // Selector de una sola carpeta: con selección múltiple, CrowdStrike Falcon cierra la app.
+  async function pickFolder() {
+    const picked = await open({ directory: true, title: "Elige un repositorio o una carpeta que contenga varios" });
+    if (typeof picked === "string") await addPathOrScan(picked);
   }
 
-  async function scanFolder() {
-    const root = await open({ directory: true, title: "Elige la carpeta que contiene tus repositorios" });
-    if (typeof root !== "string") return;
-    try {
-      const found = await api.findRepos(root);
-      if (found.length === 0) setNotice("No encontré repositorios git en esa carpeta.");
-      else await add(found);
-    } catch (e) {
-      setNotice(String(e));
-    }
-  }
-
-  /** Añade una ruta escrita a mano: si no es un repo, busca repos dentro de ella. */
   async function addTypedPath(e: React.FormEvent) {
     e.preventDefault();
     const path = typedPath.trim().replace(/^"(.*)"$/, "$1");
-    if (!path) return;
-    setBusy(true);
-    try {
-      const result = await api.addRepos([path], newGroup.trim() || null);
-      const notRepo = result.added.length === 0 && result.skipped[0]?.reason === "No es un repositorio git";
-      const found = notRepo ? await api.findRepos(path) : [];
-      if (found.length > 0) {
-        setNotice(describe(await api.addRepos(found, newGroup.trim() || null)));
-      } else {
-        setNotice(describe(result));
-      }
-      if (result.added.length > 0 || found.length > 0) setTypedPath("");
-      await refresh();
-    } catch (e) {
-      setNotice(String(e));
-    } finally {
-      setBusy(false);
-    }
+    if (path && (await addPathOrScan(path))) setTypedPath("");
   }
 
   async function remove(repo: RepoView) {
@@ -151,8 +129,9 @@ function App() {
             value={newGroup}
             onChange={(e) => setNewGroup(e.currentTarget.value)}
           />
-          <button disabled={busy} onClick={pickRepos}>Añadir repositorios</button>
-          <button disabled={busy} onClick={scanFolder}>Buscar en una carpeta</button>
+          <button disabled={busy} onClick={pickFolder} title="Un repositorio o una carpeta con varios">
+            Añadir carpeta
+          </button>
           <button className="secondary" disabled={busy} onClick={refresh}>Actualizar</button>
         </div>
         <form className="path-row" onSubmit={addTypedPath}>
@@ -199,7 +178,7 @@ function App() {
 
       {repos.length === 0 ? (
         <p className="empty">
-          Aún no hay repositorios. Añádelos uno a uno o elige una carpeta para buscar todos los que contiene.
+          Aún no hay repositorios. Elige un repositorio, o una carpeta y se añadirán todos los que contiene.
         </p>
       ) : (
         grouped.map(([group, items]) => {
