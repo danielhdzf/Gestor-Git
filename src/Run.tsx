@@ -111,12 +111,6 @@ function applyEvents(run: Run, events: RunEvent[]): Run {
   return { ...run, done, cancelled, results: run.results.map((r) => byRepo.get(r.path)!) };
 }
 
-const QUICK_ACTIONS = [
-  { label: "status", command: "status -sb" },
-  { label: "fetch", command: "fetch --prune" },
-  { label: "pull", command: "pull" },
-];
-
 interface Draft {
   original: string | null;
   name: string;
@@ -143,10 +137,22 @@ export function RunPanel({
   const [sequences, setSequences] = useState<Sequence[]>([]);
   const [chosen, setChosen] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [shortcuts, setShortcuts] = useState<string[]>([]);
+  const [shortcutDraft, setShortcutDraft] = useState<string | null>(null);
 
   useEffect(() => {
     api.listSequences().then(setSequences, (e) => onError(String(e)));
+    api.getShortcuts().then(setShortcuts, (e) => onError(String(e)));
   }, []);
+
+  async function saveShortcuts(text: string) {
+    try {
+      setShortcuts(await api.saveShortcuts(text.split("\n")));
+      setShortcutDraft(null);
+    } catch (e) {
+      onError(String(e));
+    }
+  }
 
   const canRun = !running && selectedCount > 0;
   const mode = (): RunMode => (kind === "parallel" ? { kind, max } : { kind, stopOnError });
@@ -209,11 +215,19 @@ export function RunPanel({
 
       <div className="tool-row">
         <span className="row-label">Atajos</span>
-        {QUICK_ACTIONS.map((a) => (
-          <button key={a.label} className="secondary small" disabled={!canRun} onClick={() => runSingle(a.command)} title={`git ${a.command}`}>
-            {a.label}
+        {shortcuts.map((c, i) => (
+          <button key={i} className="secondary small mono" disabled={!canRun} onClick={() => runSingle(c)} title={`git ${c}`}>
+            {c}
           </button>
         ))}
+        <button
+          className="secondary small icon"
+          title="Editar atajos"
+          aria-label="Editar atajos"
+          onClick={() => setShortcutDraft(shortcutDraft === null ? shortcuts.join("\n") : null)}
+        >
+          ✎
+        </button>
 
         <span className="row-label spaced">Secuencia</span>
         {sequences.length > 0 ? (
@@ -248,6 +262,25 @@ export function RunPanel({
           Nueva
         </button>
       </div>
+
+      {shortcutDraft !== null && (
+        <div className="editor">
+          <textarea
+            rows={4}
+            spellCheck={false}
+            autoFocus
+            placeholder={"Un comando git por línea, por ejemplo:\nstatus -sb\npull --rebase"}
+            value={shortcutDraft}
+            onChange={(e) => setShortcutDraft(e.currentTarget.value)}
+          />
+          <div className="editor-actions">
+            <span className="hint">Cada línea es un botón de atajo (máximo 8).</span>
+            <button className="secondary small" onClick={() => saveShortcuts("")}>Restaurar</button>
+            <button className="secondary small" onClick={() => setShortcutDraft(null)}>Cancelar</button>
+            <button className="small" onClick={() => saveShortcuts(shortcutDraft)}>Guardar</button>
+          </div>
+        </div>
+      )}
 
       {draft && (
         <div className="editor">

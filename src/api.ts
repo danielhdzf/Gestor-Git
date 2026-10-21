@@ -62,3 +62,8 @@ export const cancelRun = (runId: number) => invoke<void>("cancel_run", { runId }
 
 export const onRunEvent = (handler: (e: RunEvent) => void) =>
   listen<RunEvent>("run-event", (e) => handler(e.payload));
+
+export const getShortcuts = () => invoke<string[]>("get_shortcuts");
+
+/** Guarda los atajos y devuelve los que quedan (una lista vacía restaura los de serie). */
+export const saveShortcuts = (commands: string[]) => invoke<string[]>("save_shortcuts", { commands });
