@@ -13,6 +13,7 @@ function App() {
   const [newGroup, setNewGroup] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [typedPath, setTypedPath] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const { run, start, cancel, clear } = useRun();
   const running = !!run && !run.done;
@@ -103,6 +104,30 @@ function App() {
     }
   }
 
+  /** Añade una ruta escrita a mano: si no es un repo, busca repos dentro de ella. */
+  async function addTypedPath(e: React.FormEvent) {
+    e.preventDefault();
+    const path = typedPath.trim().replace(/^"(.*)"$/, "$1");
+    if (!path) return;
+    setBusy(true);
+    try {
+      const result = await api.addRepos([path], newGroup.trim() || null);
+      const notRepo = result.added.length === 0 && result.skipped[0]?.reason === "No es un repositorio git";
+      const found = notRepo ? await api.findRepos(path) : [];
+      if (found.length > 0) {
+        setNotice(describe(await api.addRepos(found, newGroup.trim() || null)));
+      } else {
+        setNotice(describe(result));
+      }
+      if (result.added.length > 0 || found.length > 0) setTypedPath("");
+      await refresh();
+    } catch (e) {
+      setNotice(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function remove(repo: RepoView) {
     await api.removeRepo(repo.path);
     await refresh();
@@ -130,6 +155,15 @@ function App() {
           <button disabled={busy} onClick={scanFolder}>Buscar en una carpeta</button>
           <button className="secondary" disabled={busy} onClick={refresh}>Actualizar</button>
         </div>
+        <form className="path-row" onSubmit={addTypedPath}>
+          <input
+            placeholder="O pega una ruta: C:\dev\mi-repo, o una carpeta con varios repos"
+            value={typedPath}
+            onChange={(e) => setTypedPath(e.currentTarget.value)}
+            spellCheck={false}
+          />
+          <button type="submit" className="secondary" disabled={busy || !typedPath.trim()}>Añadir ruta</button>
+        </form>
         <datalist id="groups">
           {groups.map((g) => (
             <option key={g} value={g} />
