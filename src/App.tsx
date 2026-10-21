@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import * as api from "./api";
 import type { AddResult, RepoView } from "./api";
+import { RunPanel, RunResults, useRun } from "./Run";
 import "./App.css";
 
 const NO_GROUP = "Sin grupo";
@@ -12,6 +13,9 @@ function App() {
   const [newGroup, setNewGroup] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const { run, start, cancel, clear } = useRun();
+  const running = !!run && !run.done;
 
   const refresh = useCallback(async () => {
     try {
@@ -24,6 +28,32 @@ function App() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Olvida la selección de repos que ya no están o han dejado de ser válidos.
+  useEffect(() => {
+    const valid = new Set(repos.filter((r) => r.status.isRepo).map((r) => r.path));
+    setSelected((sel) => {
+      const next = new Set([...sel].filter((p) => valid.has(p)));
+      return next.size === sel.size ? sel : next;
+    });
+  }, [repos]);
+
+  function toggle(paths: string[], on: boolean) {
+    setSelected((sel) => {
+      const next = new Set(sel);
+      for (const p of paths) on ? next.add(p) : next.delete(p);
+      return next;
+    });
+  }
+
+  async function runCommand(command: string, mode: api.RunMode) {
+    const targets = repos.filter((r) => selected.has(r.path));
+    try {
+      await start(targets, command, mode);
+    } catch (e) {
+      setNotice(String(e));
+    }
+  }
 
   const groups = useMemo(
     () => [...new Set(repos.map((r) => r.group).filter((g): g is string => !!g))].sort(),
@@ -114,6 +144,10 @@ function App() {
         </div>
       )}
 
+      <RunPanel selectedCount={selected.size} running={running} onRun={runCommand} onCancel={cancel} />
+
+      {run && <RunResults run={run} onClear={clear} />}
+
       {groups.length > 0 && (
         <nav className="filters">
           <Chip active={filter === null} onClick={() => setFilter(null)}>Todos ({repos.length})</Chip>
@@ -128,16 +162,38 @@ function App() {
           Aún no hay repositorios. Añádelos uno a uno o elige una carpeta para buscar todos los que contiene.
         </p>
       ) : (
-        grouped.map(([group, items]) => (
-          <section key={group}>
-            <h2>{group} <span className="count">{items.length}</span></h2>
-            <ul className="repo-list">
-              {items.map((repo) => (
-                <RepoRow key={repo.path} repo={repo} onRemove={remove} onGroup={changeGroup} />
-              ))}
-            </ul>
-          </section>
-        ))
+        grouped.map(([group, items]) => {
+          const selectable = items.filter((r) => r.status.isRepo).map((r) => r.path);
+          const all = selectable.length > 0 && selectable.every((p) => selected.has(p));
+          return (
+            <section key={group}>
+              <h2>
+                <label className="select-group" title="Seleccionar todo el grupo">
+                  <input
+                    type="checkbox"
+                    checked={all}
+                    disabled={selectable.length === 0}
+                    onChange={() => toggle(selectable, !all)}
+                  />
+                  {group}
+                </label>{" "}
+                <span className="count">{items.length}</span>
+              </h2>
+              <ul className="repo-list">
+                {items.map((repo) => (
+                  <RepoRow
+                    key={repo.path}
+                    repo={repo}
+                    selected={selected.has(repo.path)}
+                    onToggle={(on) => toggle([repo.path], on)}
+                    onRemove={remove}
+                    onGroup={changeGroup}
+                  />
+                ))}
+              </ul>
+            </section>
+          );
+        })
       )}
     </main>
   );
@@ -145,10 +201,14 @@ function App() {
 
 function RepoRow({
   repo,
+  selected,
+  onToggle,
   onRemove,
   onGroup,
 }: {
   repo: RepoView;
+  selected: boolean;
+  onToggle: (on: boolean) => void;
   onRemove: (r: RepoView) => void;
   onGroup: (r: RepoView, g: string) => void;
 }) {
@@ -157,6 +217,13 @@ function RepoRow({
 
   return (
     <li className={repo.status.isRepo ? "repo" : "repo invalid"}>
+      <input
+        type="checkbox"
+        checked={selected}
+        disabled={!repo.status.isRepo}
+        onChange={(e) => onToggle(e.currentTarget.checked)}
+        aria-label={`Seleccionar ${repo.name}`}
+      />
       <div className="repo-info">
         <strong>{repo.name}</strong>
         <span className="path" title={repo.path}>{repo.path}</span>
