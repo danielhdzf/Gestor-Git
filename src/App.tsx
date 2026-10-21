@@ -130,7 +130,7 @@ function App() {
             onChange={(e) => setNewGroup(e.currentTarget.value)}
           />
           <button disabled={busy} onClick={pickFolder} title="Un repositorio o una carpeta con varios">
-            Añadir carpeta
+            Buscar en una carpeta
           </button>
           <button className="secondary" disabled={busy} onClick={refresh}>Actualizar</button>
         </div>
