@@ -66,10 +66,7 @@ impl Config {
         if self.repos.iter().any(|r| same_path(&r.path, &key)) {
             return Err(AddError::Duplicate);
         }
-        let name = Path::new(&key)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| key.clone());
+        let name = folder_name(&key);
         self.repos.push(Repo {
             path: key,
             name,
@@ -83,6 +80,17 @@ impl Config {
         let before = self.repos.len();
         self.repos.retain(|r| !same_path(&r.path, path));
         self.repos.len() != before
+    }
+
+    /// Cambia el nombre con el que se ve el repo; vacío vuelve al nombre de la carpeta.
+    pub fn rename(&mut self, path: &str, name: &str) -> bool {
+        let Some(repo) = self.repos.iter_mut().find(|r| same_path(&r.path, path)) else {
+            return false;
+        };
+        let name = name.trim();
+        repo.name = if name.is_empty() { folder_name(&repo.path) } else { name.to_string() };
+        self.repos.sort_by_key(|r| r.name.to_lowercase());
+        true
     }
 
     pub fn set_group(&mut self, path: &str, group: Option<String>) -> bool {
@@ -171,6 +179,13 @@ pub fn find_repos_in(root: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(found)
 }
 
+fn folder_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
 fn clean_group(group: Option<String>) -> Option<String> {
     group.map(|g| g.trim().to_string()).filter(|g| !g.is_empty())
 }
@@ -251,6 +266,18 @@ mod tests {
 
         assert!(cfg.delete_sequence("ACTUALIZAR"));
         assert!(cfg.sequences.is_empty());
+    }
+
+    #[test]
+    fn renombrar() {
+        let mut cfg = Config::default();
+        cfg.add(Path::new("/dev/api"), None).unwrap();
+        cfg.add(Path::new("/dev/web"), None).unwrap();
+        assert!(cfg.rename("/dev/web", "  Admin web "));
+        assert_eq!(cfg.repos[0].name, "Admin web", "se reordena por nombre");
+        assert!(cfg.rename("/dev/web", ""));
+        assert_eq!(cfg.repos.iter().find(|r| r.path == "/dev/web").unwrap().name, "web");
+        assert!(!cfg.rename("/no/existe", "x"));
     }
 
     #[test]

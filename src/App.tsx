@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import * as api from "./api";
 import type { AddResult, RepoView } from "./api";
@@ -18,17 +18,37 @@ function App() {
   const { run, start, cancel, clear } = useRun();
   const running = !!run && !run.done;
 
-  const refresh = useCallback(async () => {
+  /** Vuelve a leer los repos (y su rama actual). En segundo plano no muestra errores. */
+  const refresh = useCallback(async (quiet = false) => {
     try {
-      setRepos(await api.listRepos());
+      const next = await api.listRepos();
+      // Evita repintar la lista cuando nada ha cambiado, que es lo normal en los refrescos periódicos.
+      setRepos((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
     } catch (e) {
-      setNotice(String(e));
+      if (!quiet) setNotice(String(e));
     }
   }, []);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // La rama puede cambiar fuera de la app (un checkout en la terminal, el IDE...). Leer .git/HEAD
+  // es barato, así que se relee cada pocos segundos mientras la ventana está visible y al volver a ella.
+  useEffect(() => {
+    const tick = () => document.visibilityState === "visible" && refresh(true);
+    const timer = window.setInterval(tick, 5000);
+    window.addEventListener("focus", tick);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", tick);
+    };
+  }, [refresh]);
+
+  // Al terminar una ejecución (un checkout, un pull...) la rama puede haber cambiado.
+  useEffect(() => {
+    if (run?.done) refresh(true);
+  }, [run?.done, refresh]);
 
   // Olvida la selección de repos que ya no están o han dejado de ser válidos.
   useEffect(() => {
@@ -111,6 +131,16 @@ function App() {
     await refresh();
   }
 
+  async function rename(repo: RepoView, name: string) {
+    if (name.trim() === repo.name) return;
+    try {
+      await api.renameRepo(repo.path, name);
+      await refresh();
+    } catch (e) {
+      setNotice(String(e));
+    }
+  }
+
   async function changeGroup(repo: RepoView, group: string) {
     const value = group.trim() || null;
     if (value === repo.group) return;
@@ -132,7 +162,7 @@ function App() {
           <button disabled={busy} onClick={pickFolder} title="Un repositorio o una carpeta con varios">
             Buscar en una carpeta
           </button>
-          <button className="secondary" disabled={busy} onClick={refresh}>Actualizar</button>
+          <button className="secondary" disabled={busy} onClick={() => refresh()}>Actualizar</button>
         </div>
         <form className="path-row" onSubmit={addTypedPath}>
           <input
@@ -207,6 +237,7 @@ function App() {
                     onToggle={(on) => toggle([repo.path], on)}
                     onRemove={remove}
                     onGroup={changeGroup}
+                    onRename={rename}
                   />
                 ))}
               </ul>
@@ -224,15 +255,32 @@ function RepoRow({
   onToggle,
   onRemove,
   onGroup,
+  onRename,
 }: {
   repo: RepoView;
   selected: boolean;
   onToggle: (on: boolean) => void;
   onRemove: (r: RepoView) => void;
   onGroup: (r: RepoView, g: string) => void;
+  onRename: (r: RepoView, name: string) => void;
 }) {
   const [group, setGroupText] = useState(repo.group ?? "");
   useEffect(() => setGroupText(repo.group ?? ""), [repo.group]);
+  const [nameDraft, setNameDraft] = useState<string | null>(null);
+  // Enter o Escape cierran la edición; el blur que llega después no debe volver a guardar.
+  const renameDone = useRef(false);
+
+  function startRename() {
+    renameDone.current = false;
+    setNameDraft(repo.name);
+  }
+
+  function finishRename(save: boolean) {
+    if (renameDone.current) return;
+    renameDone.current = true;
+    if (nameDraft !== null && save) onRename(repo, nameDraft);
+    setNameDraft(null);
+  }
 
   return (
     <li className={repo.status.isRepo ? "repo" : "repo invalid"}>
@@ -244,7 +292,34 @@ function RepoRow({
         aria-label={`Seleccionar ${repo.name}`}
       />
       <div className="repo-info">
-        <strong>{repo.name}</strong>
+        {nameDraft === null ? (
+          <div className="name-row">
+            <strong onDoubleClick={startRename} title="Doble clic para cambiar el nombre">
+              {repo.name}
+            </strong>
+            <button
+              className="secondary small icon rename"
+              aria-label={`Cambiar el nombre de ${repo.name}`}
+              title="Cambiar el nombre (vacío = nombre de la carpeta)"
+              onClick={startRename}
+            >
+              ✎
+            </button>
+          </div>
+        ) : (
+          <input
+            className="name-input"
+            autoFocus
+            value={nameDraft}
+            placeholder="Vacío = nombre de la carpeta"
+            onChange={(e) => setNameDraft(e.currentTarget.value)}
+            onBlur={() => finishRename(true)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") finishRename(true);
+              if (e.key === "Escape") finishRename(false);
+            }}
+          />
+        )}
         <span className="path" title={repo.path}>{repo.path}</span>
       </div>
       {repo.status.isRepo ? (

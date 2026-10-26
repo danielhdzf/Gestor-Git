@@ -28,6 +28,9 @@ export const findRepos = (root: string) => invoke<string[]>("find_repos", { root
 
 export const removeRepo = (path: string) => invoke<void>("remove_repo", { path });
 
+/** Un nombre vacío vuelve al nombre de la carpeta. */
+export const renameRepo = (path: string, name: string) => invoke<void>("rename_repo", { path, name });
+
 export const setGroup = (path: string, group: string | null) =>
   invoke<void>("set_group", { path, group });
 

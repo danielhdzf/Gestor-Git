@@ -146,3 +146,9 @@ button.danger-text { color: var(--error); }
 .path-row input { flex: 1; font-family: Consolas, "Cascadia Mono", monospace; }
 button.mono { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; }
 button.icon { padding: 4px 8px; }
+
+.name-row { display: flex; align-items: center; gap: 4px; }
+.name-row strong { cursor: text; }
+button.rename { padding: 0 6px; border-color: transparent; background: transparent; color: var(--muted); opacity: 0; }
+.repo:hover button.rename, button.rename:focus-visible { opacity: 1; }
+.name-input { padding: 2px 6px; font-weight: 600; }
