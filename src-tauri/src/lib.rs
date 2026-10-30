@@ -109,6 +109,15 @@ fn remove_repo(path: String, state: State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn rename_repo(path: String, name: String, state: State<AppState>) -> Result<(), String> {
+    let mut cfg = state.config.lock().unwrap();
+    if cfg.rename(&path, &name) {
+        persist(&state, &cfg)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn set_group(path: String, group: Option<String>, state: State<AppState>) -> Result<(), String> {
     let mut cfg = state.config.lock().unwrap();
     if cfg.set_group(&path, group) {
@@ -226,6 +235,7 @@ pub fn run() {
             find_repos,
             remove_repo,
             set_group,
+            rename_repo,
             get_shortcuts,
             save_shortcuts,
             list_sequences,
